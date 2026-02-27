@@ -17,11 +17,19 @@ interface ListingBase {
   permalink: string;
   currency?: string;
   currency_id?: string;
+  date_created?: string | null;
 }
 
 export async function sendAlert(listing: ListingBase, analysis: AnalysisResult) {
   const scoreEmoji = analysis.score >= 8 ? "🔥" : analysis.score >= 6 ? "✅" : "⚠️";
   const currency = listing.currency ?? listing.currency_id ?? "ARS";
+
+  const publishedAgo = listing.date_created
+    ? (() => {
+        const mins = Math.round((Date.now() - new Date(listing.date_created).getTime()) / 60000);
+        return mins < 60 ? `hace ${mins} min` : `hace ${Math.round(mins / 60)}hs`;
+      })()
+    : null;
 
   const positives = analysis.positives?.length > 0
     ? `\n✅ <b>Puntos positivos:</b>\n${analysis.positives.map((p) => `  • ${esc(p)}`).join("\n")}`
@@ -34,7 +42,7 @@ export async function sendAlert(listing: ListingBase, analysis: AnalysisResult) 
   const message = `${scoreEmoji} <b>Nueva oferta — Score ${analysis.score}/10</b>
 
 <b>${esc(listing.title)}</b>
-💰 $${listing.price.toLocaleString("es-AR")} ${currency}
+💰 $${listing.price.toLocaleString("es-AR")} ${currency}${publishedAgo ? `  ⏱ <i>Publicado ${publishedAgo}</i>` : ""}
 
 📋 ${esc(analysis.summary)}
 ${positives}${flags}

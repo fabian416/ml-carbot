@@ -36,31 +36,42 @@ function buildCookieString(cookies: any[]): string {
 
 // ─── Tokens de sesión ──────────────────────────────────────────
 async function getPageTokens(
-  cookieStr: string
+  cookieStr: string,
+  attempt = 1
 ): Promise<{ lsd: string; dtsg: string; userId: string }> {
-  const res = await axios.get("https://www.facebook.com/marketplace/", {
-    headers: {
-      ...BASE_HEADERS,
-      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "sec-fetch-dest": "document",
-      "sec-fetch-mode": "navigate",
-      "sec-fetch-site": "none",
-      "cookie": cookieStr,
-    },
-    timeout: 20000,
-    decompress: true,
-  });
+  try {
+    const res = await axios.get("https://www.facebook.com/marketplace/", {
+      headers: {
+        ...BASE_HEADERS,
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "cookie": cookieStr,
+      },
+      timeout: 25000,
+      decompress: true,
+    });
+    const html: string = res.data;
+    const lsd = html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1] ?? "";
+    const dtsg =
+      html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/)?.[1] ??
+      html.match(/name="fb_dtsg" value="([^"]+)"/)?.[1] ?? "";
+    const userId =
+      html.match(/"USER_ID":"(\d+)"/)?.[1] ??
+      html.match(/"userID":"(\d+)"/)?.[1] ?? "";
+    return { lsd, dtsg, userId };
+  } catch (err: any) {
+    const retryable = ["ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "ERR_NETWORK"].includes(err.code ?? "");
+    if (retryable && attempt <= 3) {
+      const wait = attempt * 4000;
+      console.log(`  FB: conexión cortada (${err.code}), reintentando en ${wait / 1000}s... (intento ${attempt}/3)`);
+      await new Promise((r) => setTimeout(r, wait));
+      return getPageTokens(cookieStr, attempt + 1);
+    }
+    throw err;
+  }
 
-  const html: string = res.data;
-  const lsd = html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1] ?? "";
-  const dtsg =
-    html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/)?.[1] ??
-    html.match(/name="fb_dtsg" value="([^"]+)"/)?.[1] ?? "";
-  const userId =
-    html.match(/"USER_ID":"(\d+)"/)?.[1] ??
-    html.match(/"userID":"(\d+)"/)?.[1] ?? "";
-
-  return { lsd, dtsg, userId };
 }
 
 // ─── Browse por categoría (sin texto, todos los vehículos) ─────
@@ -387,7 +398,7 @@ async function callGraphQL(
         thumbnail: listing.primary_listing_photo?.image?.uri ?? "",
         date_created: listing.creation_time
           ? new Date(listing.creation_time * 1000).toISOString()
-          : new Date().toISOString(),
+          : null,  // null = no sabemos cuándo se publicó → se filtra
         description: listing.redacted_description?.text ?? "",
         images: listing.listing_photos?.map((p: any) => p.image?.uri).filter(Boolean) ?? [],
       } as FBListing;

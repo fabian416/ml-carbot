@@ -8,16 +8,16 @@ import { FBListing } from "./facebook";
 // ── Configuración ──────────────────────────────────────────────
 const CONFIG = {
   autos: {
-    maxHoursOld: 24,
+    maxHoursOld: 6,            // solo últimas 6hs → más edge para negociar
     priceMinARS: 3_000_000,    // $3M ARS  (~$2.300 USD)
     priceMaxARS: 20_000_000,   // $20M ARS (~$15.000 USD)
-    minScore: 6,               // bajado de 7 → más alertas
+    minScore: 6,
     queries: AUTO_QUERIES,
   },
   motos: {
-    maxHoursOld: 24,
-    priceMinARS: 1_500_000,    // $1.5M ARS → cubre motos medianas
-    priceMaxARS: 12_000_000,   // $12M ARS
+    maxHoursOld: 6,
+    priceMinARS: 1_500_000,
+    priceMaxARS: 12_000_000,
     minScore: 6,
     queries: MOTO_QUERIES,
   },
@@ -27,8 +27,12 @@ const POLL_INTERVAL = "*/30 * * * *"; // cada 30 minutos
 const SUMMARY_TIME  = "0 20 * * *";   // resumen diario a las 20hs
 // ──────────────────────────────────────────────────────────────
 
-// IDs ya vistos para no analizar dos veces
-const seen = new Set<string>();
+// IDs ya vistos por categoría para no analizar dos veces
+const seenAutos = new Set<string>();
+const seenMotos = new Set<string>();
+
+// Mutex para evitar ciclos superpuestos
+let isRunning = false;
 
 let totalAnalyzed = 0;
 const approvedToday: Array<{ listing: ListingInput; analysis: AnalysisResult }> = [];
@@ -42,19 +46,36 @@ const TITLE_BLACKLIST = [
   "joya", "nunca taxi", "anticipo", "financiacion", "financiación",
 ];
 
+// Frases que delatan concesionarias/revendedores en título o descripción
+const DEALER_BLACKLIST = [
+  "automotores", "autoparque", "concesionaria", "agencia",
+  "garage ", "somos ", "stock físico", "stock fisico",
+  "tomo su usado", "tomamos usado", "coordinar visita",
+  "unidad en stock", "entrega inmediata", "financiamos con dni",
+  "financiamos 100%", "todos nuestros autos",
+];
+
 function passesTitleFilter(title: string): boolean {
   const lower = title.toLowerCase();
   return !TITLE_BLACKLIST.some((w) => lower.includes(w));
 }
 
-function isRecent(dateStr: string, maxHoursOld: number): boolean {
+function passesDealer(title: string, description: string): boolean {
+  const text = (title + " " + description).toLowerCase();
+  const isDealer = DEALER_BLACKLIST.some((w) => text.includes(w));
+  return !isDealer;
+}
+
+function isRecent(dateStr: string | null, maxHoursOld: number): boolean {
+  if (!dateStr) return false; // sin fecha → descartado
   const cutoff = Date.now() - maxHoursOld * 60 * 60 * 1000;
   return new Date(dateStr).getTime() >= cutoff;
 }
 
 async function runCategory(
   name: string,
-  config: typeof CONFIG.autos
+  config: typeof CONFIG.autos,
+  seen: Set<string>
 ) {
   // Paso 1: browse categoría con queries específicas (autos o motos)
   const allListings = await browseFBVehicles({
@@ -93,6 +114,12 @@ async function runCategory(
         description: detail.description || listing.description || "",
         images: detail.images?.length ? detail.images : listing.images ?? [],
       };
+
+      // Paso 3.5: filtrar concesionarias/revendedores por descripción
+      if (!passesDealer(enriched.title, enriched.description ?? "")) {
+        console.log(`    🏪 Dealer/concesionaria — ${enriched.title.slice(0, 50)}`);
+        continue;
+      }
 
       // Paso 4: mediana de precios en Facebook para el mismo modelo
       const medianPrice = await getFBMedianPrice(enriched.title);
@@ -141,15 +168,31 @@ async function runCategory(
 }
 
 async function run() {
+  if (isRunning) {
+    console.log(`\n[ciclo anterior todavía corriendo, saltando...]`);
+    return;
+  }
+  isRunning = true;
+
   const now = new Date().toLocaleTimeString("es-AR");
   console.log(`\n[${now}] Iniciando ciclo...`);
 
-  clearMedianCache(); // limpiar cache de medianas en cada ciclo
+  clearMedianCache();
 
-  await runCategory("Autos", CONFIG.autos);
-  await runCategory("Motos", CONFIG.motos);
+  try {
+    await runCategory("Autos", CONFIG.autos, seenAutos);
+  } catch (err: any) {
+    console.error(`  [Autos] Error en ciclo: ${err.message}`);
+  }
+
+  try {
+    await runCategory("Motos", CONFIG.motos, seenMotos);
+  } catch (err: any) {
+    console.error(`  [Motos] Error en ciclo: ${err.message}`);
+  }
 
   console.log(`  Total analizados hoy: ${totalAnalyzed}`);
+  isRunning = false;
 }
 
 async function resetDaily() {
