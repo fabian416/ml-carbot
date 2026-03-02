@@ -202,6 +202,11 @@ async function resetDaily() {
   console.log("Resumen diario enviado, contadores reiniciados");
 }
 
+// Servidor HTTP mínimo para que Railway no mate el proceso
+import http from "http";
+const PORT = process.env.PORT || 3000;
+http.createServer((_, res) => { res.writeHead(200); res.end("ok"); }).listen(PORT);
+
 // Arranque inmediato
 run();
 
