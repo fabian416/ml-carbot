@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
     "fb:login": "ts-node src/fb-login.ts",
     "test:fb": "ts-node src/test-facebook.ts",
     "test:analyze": "ts-node src/test-analyze.ts",

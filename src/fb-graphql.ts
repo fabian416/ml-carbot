@@ -227,13 +227,17 @@ interface SessionCache {
 let _session: SessionCache | null = null;
 
 export async function getSession(): Promise<SessionCache | null> {
-  const cookiesPath = join(__dirname, "../fb-cookies.json");
-  if (!existsSync(cookiesPath)) return null;
-
   // Reusar sesión por 10 minutos
   if (_session && Date.now() < _session.expiresAt) return _session;
 
-  const cookies = JSON.parse(readFileSync(cookiesPath, "utf-8"));
+  let cookies: any[];
+  if (process.env.FB_COOKIES) {
+    cookies = JSON.parse(process.env.FB_COOKIES);
+  } else {
+    const cookiesPath = join(__dirname, "../fb-cookies.json");
+    if (!existsSync(cookiesPath)) return null;
+    cookies = JSON.parse(readFileSync(cookiesPath, "utf-8"));
+  }
   const cookieStr = buildCookieString(cookies);
 
   const { lsd, dtsg, userId } = await getPageTokens(cookieStr);
@@ -323,10 +327,15 @@ export async function getFBMedianPrice(
 
 // ─── Helpers privados ─────────────────────────────────────────
 
-// Carga las cookies una vez y las devuelve junto con el string
+// Carga las cookies desde env var o archivo local
 export function loadCookies(): { cookies: any[]; cookieStr: string } {
-  const cookiesPath = join(__dirname, "../fb-cookies.json");
-  const cookies = JSON.parse(readFileSync(cookiesPath, "utf-8"));
+  let cookies: any[];
+  if (process.env.FB_COOKIES) {
+    cookies = JSON.parse(process.env.FB_COOKIES);
+  } else {
+    const cookiesPath = join(__dirname, "../fb-cookies.json");
+    cookies = JSON.parse(readFileSync(cookiesPath, "utf-8"));
+  }
   return { cookies, cookieStr: buildCookieString(cookies) };
 }
 
