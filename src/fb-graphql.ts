@@ -121,6 +121,8 @@ export async function browseFBVehicles(opts: {
         allResults.push(r);
       }
     }
+    // Pausa entre queries para evitar rate limit de FB
+    await new Promise((r) => setTimeout(r, 2500));
   }
 
   return allResults;
@@ -386,6 +388,10 @@ async function callGraphQL(
     return [];
   }
 
+  // Debug: mostrar claves top-level de la respuesta
+  const topKeys = Object.keys(parsed?.data ?? {});
+  console.log(`  FB debug: data keys=${JSON.stringify(topKeys)} | errors=${JSON.stringify(parsed?.errors?.map((e:any)=>e.message) ?? [])}`);
+
   const edges: any[] =
     parsed?.data?.marketplace_search?.feed_units?.edges ??
     parsed?.data?.viewer?.marketplace_feed_stories?.edges ??
@@ -400,18 +406,26 @@ async function callGraphQL(
         listing.listing_price?.formatted_amount ??
         listing.listing_price?.amount_with_offset_in_currency ?? "0";
       const price = parseInt(String(rawPrice).replace(/[^0-9]/g, ""), 10) || 0;
+      const currency: string =
+        listing.listing_price?.currency ??
+        listing.listing_price?.currency_id ?? "ARS";
+
+      // Convertir USD a ARS aproximado (1 USD ≈ 1050 ARS blue)
+      const USD_TO_ARS = 1050;
+      const priceARS = currency === "USD" ? price * USD_TO_ARS : price;
 
       return {
         id: listing.id,
         title: listing.marketplace_listing_title ?? listing.name ?? "",
-        price,
+        price: priceARS,
+        currency_id: currency,
         location:
           listing.location?.reverse_geocode?.city ?? "Buenos Aires",
         permalink: `https://www.facebook.com/marketplace/item/${listing.id}`,
         thumbnail: listing.primary_listing_photo?.image?.uri ?? "",
         date_created: listing.creation_time
           ? new Date(listing.creation_time * 1000).toISOString()
-          : null,  // null = no sabemos cuándo se publicó → se filtra
+          : null,
         description: listing.redacted_description?.text ?? "",
         images: listing.listing_photos?.map((p: any) => p.image?.uri).filter(Boolean) ?? [],
       } as FBListing;

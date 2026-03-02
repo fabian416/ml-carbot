@@ -1,5 +1,7 @@
 import "dotenv/config";
 import cron from "node-cron";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 import { browseFBVehicles, getFBListingDetail, getFBMedianPrice, loadCookies, clearMedianCache, AUTO_QUERIES, MOTO_QUERIES } from "./fb-graphql";
 import { analyzeListing, AnalysisResult, ListingInput } from "./analyzer";
 import { sendAlert, sendDailySummary } from "./telegram";
@@ -8,17 +10,19 @@ import { FBListing } from "./facebook";
 // ── Configuración ──────────────────────────────────────────────
 const CONFIG = {
   autos: {
-    maxHoursOld: 6,            // solo últimas 6hs → más edge para negociar
-    priceMinARS: 3_000_000,    // $3M ARS  (~$2.300 USD)
-    priceMaxARS: 20_000_000,   // $20M ARS (~$15.000 USD)
-    minScore: 6,
+    maxHoursOld: 6,
+    priceMinARS: 3_000_000,
+    priceMaxARS: 20_000_000,
+    minScore: 7.5,             // subido de 6 → menos spam, más calidad
+    maxAlertsPerCycle: 3,      // máximo 3 alertas por ciclo
     queries: AUTO_QUERIES,
   },
   motos: {
     maxHoursOld: 6,
     priceMinARS: 1_500_000,
     priceMaxARS: 12_000_000,
-    minScore: 6,
+    minScore: 7.5,
+    maxAlertsPerCycle: 2,
     queries: MOTO_QUERIES,
   },
 };
@@ -27,9 +31,31 @@ const POLL_INTERVAL = "*/30 * * * *"; // cada 30 minutos
 const SUMMARY_TIME  = "0 20 * * *";   // resumen diario a las 20hs
 // ──────────────────────────────────────────────────────────────
 
-// IDs ya vistos por categoría para no analizar dos veces
-const seenAutos = new Set<string>();
-const seenMotos = new Set<string>();
+// IDs ya vistos — persisten en disco para sobrevivir reinicios
+const SEEN_FILE = join(__dirname, "../seen-ids.json");
+
+function loadSeen(): { autos: Set<string>; motos: Set<string> } {
+  if (existsSync(SEEN_FILE)) {
+    try {
+      const data = JSON.parse(readFileSync(SEEN_FILE, "utf-8"));
+      return {
+        autos: new Set(data.autos ?? []),
+        motos: new Set(data.motos ?? []),
+      };
+    } catch { /* ignorar */ }
+  }
+  return { autos: new Set(), motos: new Set() };
+}
+
+function saveSeen() {
+  writeFileSync(SEEN_FILE, JSON.stringify({
+    autos: [...seenAutos],
+    motos: [...seenMotos],
+  }));
+}
+
+const { autos: seenAutos, motos: seenMotos } = loadSeen();
+console.log(`  IDs en memoria: ${seenAutos.size} autos, ${seenMotos.size} motos`);
 
 // Mutex para evitar ciclos superpuestos
 let isRunning = false;
@@ -53,6 +79,12 @@ const DEALER_BLACKLIST = [
   "tomo su usado", "tomamos usado", "coordinar visita",
   "unidad en stock", "entrega inmediata", "financiamos con dni",
   "financiamos 100%", "todos nuestros autos",
+  // financieras y cuotas
+  "cuotas fijas", "cuotas desde", "con o sin veraz", "sin veraz",
+  "retira con un anticipo", "retiro con dni", "financio en cuotas",
+  "tasa 0", "anticipo y cuotas", "financiación en pesos",
+  // dealers con emojis típicos
+  "stock físico 🚗", "vendo ya!!", "liquido ya",
 ];
 
 function passesTitleFilter(title: string): boolean {
@@ -67,14 +99,14 @@ function passesDealer(title: string, description: string): boolean {
 }
 
 function isRecent(dateStr: string | null, maxHoursOld: number): boolean {
-  if (!dateStr) return false; // sin fecha → descartado
+  if (!dateStr) return true; // sin fecha → FB ya ordena por recencia, lo dejamos pasar
   const cutoff = Date.now() - maxHoursOld * 60 * 60 * 1000;
   return new Date(dateStr).getTime() >= cutoff;
 }
 
 async function runCategory(
   name: string,
-  config: typeof CONFIG.autos,
+  config: typeof CONFIG.autos & { maxAlertsPerCycle: number },
   seen: Set<string>
 ) {
   // Paso 1: browse categoría con queries específicas (autos o motos)
@@ -85,16 +117,22 @@ async function runCategory(
     queries: config.queries,
   });
 
-  // Paso 2: filtros básicos (precio ARS, recencia, blacklist, ya vistos)
+  let alertsThisCycle = 0;
+
+  // Paso 2: filtros básicos con debug
+  let nSeen = 0, nTitle = 0, nPrice = 0, nDate = 0;
   const candidates = allListings.filter((l) => {
-    if (seen.has(l.id)) return false;
-    if (!passesTitleFilter(l.title)) return false;
-    if (l.price < config.priceMinARS || l.price > config.priceMaxARS) return false;
-    if (!isRecent(l.date_created, config.maxHoursOld)) return false;
+    if (seen.has(l.id))                                              { nSeen++;  return false; }
+    if (!passesTitleFilter(l.title))                                 { nTitle++; return false; }
+    if (l.price < config.priceMinARS || l.price > config.priceMaxARS) { nPrice++; return false; }
+    if (!isRecent(l.date_created, config.maxHoursOld))               { nDate++;  return false; }
     return true;
   });
 
   console.log(`  [${name}] ${allListings.length} del feed → ${candidates.length} pasan filtros`);
+  if (candidates.length === 0) {
+    console.log(`    ↳ ya vistos: ${nSeen} | blacklist: ${nTitle} | precio: ${nPrice} | fecha: ${nDate}`);
+  }
 
   if (candidates.length === 0) return;
 
@@ -153,11 +191,12 @@ async function runCategory(
         console.log(`       "${enriched.description.slice(0, 80)}..."`);
       }
 
-      // Paso 7: alerta Telegram
-      if (analysis.isDeal && analysis.score >= config.minScore) {
+      // Paso 7: alerta Telegram (con límite por ciclo)
+      if (analysis.isDeal && analysis.score >= config.minScore && alertsThisCycle < config.maxAlertsPerCycle) {
         await sendAlert(enriched as any, analysis);
         approvedToday.push({ listing: input, analysis });
-        console.log(`    📬 Alerta enviada`);
+        alertsThisCycle++;
+        console.log(`    📬 Alerta enviada (${alertsThisCycle}/${config.maxAlertsPerCycle})`);
       }
 
       await new Promise((r) => setTimeout(r, 1200));
@@ -165,6 +204,9 @@ async function runCategory(
       console.error(`    Error en ${listing.id}: ${err.message}`);
     }
   }
+
+  // Guardar IDs vistos en disco para sobrevivir reinicios
+  saveSeen();
 }
 
 async function run() {
