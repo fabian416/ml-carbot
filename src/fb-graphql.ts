@@ -231,7 +231,9 @@ export async function getSession(): Promise<SessionCache | null> {
   if (_session && Date.now() < _session.expiresAt) return _session;
 
   let cookies: any[];
-  if (process.env.FB_COOKIES) {
+  if (process.env.FB_COOKIES_B64) {
+    cookies = JSON.parse(Buffer.from(process.env.FB_COOKIES_B64, "base64").toString("utf-8"));
+  } else if (process.env.FB_COOKIES) {
     cookies = JSON.parse(process.env.FB_COOKIES);
   } else {
     const cookiesPath = join(__dirname, "../fb-cookies.json");
@@ -330,7 +332,9 @@ export async function getFBMedianPrice(
 // Carga las cookies desde env var o archivo local
 export function loadCookies(): { cookies: any[]; cookieStr: string } {
   let cookies: any[];
-  if (process.env.FB_COOKIES) {
+  if (process.env.FB_COOKIES_B64) {
+    cookies = JSON.parse(Buffer.from(process.env.FB_COOKIES_B64, "base64").toString("utf-8"));
+  } else if (process.env.FB_COOKIES) {
     cookies = JSON.parse(process.env.FB_COOKIES);
   } else {
     const cookiesPath = join(__dirname, "../fb-cookies.json");
