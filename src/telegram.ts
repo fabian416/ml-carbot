@@ -21,7 +21,12 @@ interface ListingBase {
 }
 
 export async function sendAlert(listing: ListingBase, analysis: AnalysisResult) {
-  const scoreEmoji = analysis.score >= 8 ? "🔥" : analysis.score >= 6 ? "✅" : "⚠️";
+  const { headerEmoji, priorityLabel } =
+    analysis.priority === "urgent"
+      ? { headerEmoji: "🚨", priorityLabel: "OPORTUNIDAD URGENTE" }
+      : analysis.priority === "good"
+        ? { headerEmoji: "✅", priorityLabel: "Buena oferta" }
+        : { headerEmoji: "🟡", priorityLabel: "Vale la pena mirar" };
   const currency = listing.currency ?? listing.currency_id ?? "ARS";
 
   const publishedAgo = listing.date_created
@@ -39,7 +44,9 @@ export async function sendAlert(listing: ListingBase, analysis: AnalysisResult) 
     ? `\n🚩 <b>Red flags:</b>\n${analysis.redFlags.map((f) => `  • ${esc(f)}`).join("\n")}`
     : "\n✅ <b>Sin red flags detectadas</b>";
 
-  const message = `${scoreEmoji} <b>Nueva oferta — Score ${analysis.score}/10</b>
+  const urgentTag = analysis.urgentVendor ? "  ⚡ <b>Vendedor apurado</b>" : "";
+
+  const message = `${headerEmoji} <b>${priorityLabel} — Score ${analysis.score}/10</b>${urgentTag}
 
 <b>${esc(listing.title)}</b>
 💰 $${listing.price.toLocaleString("es-AR")} ${currency}${publishedAgo ? `  ⏱ <i>Publicado ${publishedAgo}</i>` : ""}

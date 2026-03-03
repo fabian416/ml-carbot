@@ -11,7 +11,9 @@ const SYSTEM_PROMPT = readFileSync(
 
 export interface AnalysisResult {
   isDeal: boolean;
+  priority: "urgent" | "good" | "maybe";
   score: number;
+  urgentVendor: boolean;
   summary: string;
   positives: string[];
   redFlags: string[];
@@ -79,6 +81,7 @@ Respondé SOLO con un JSON con esta estructura exacta (sin texto antes ni despu�
 {
   "isDeal": boolean,
   "score": número entre 1 y 10,
+  "urgentVendor": boolean (true si detectás señales claras de que el vendedor necesita vender rápido),
   "summary": "veredicto en 1 oración directa",
   "positives": ["máximo 3 puntos positivos"],
   "redFlags": ["todas las red flags que detectes, vacío si no hay"],
@@ -96,5 +99,15 @@ Respondé SOLO con un JSON con esta estructura exacta (sin texto antes ni despu�
 
   const text = (message.content[0] as { text: string }).text;
   const json = text.match(/\{[\s\S]*\}/)?.[0] ?? "{}";
-  return JSON.parse(json) as AnalysisResult;
+  const result = JSON.parse(json) as Omit<AnalysisResult, "priority">;
+
+  // Compute priority deterministically from score + vendor urgency
+  const priority: AnalysisResult["priority"] =
+    result.score >= 8.5 || (result.score >= 8 && result.urgentVendor)
+      ? "urgent"
+      : result.score >= 7
+        ? "good"
+        : "maybe";
+
+  return { ...result, priority };
 }

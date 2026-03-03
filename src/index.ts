@@ -233,8 +233,11 @@ async function runCategory(
 
       const analysis = await analyzeListing(input, medianPrice);
 
-      const emoji = analysis.score >= 8 ? "🔥" : analysis.score >= 6 ? "✅" : "❌";
-      console.log(`    ${emoji} Score ${analysis.score}/10 — ${enriched.title.slice(0, 60)}`);
+      const emoji =
+        analysis.priority === "urgent" ? "🚨" :
+        analysis.priority === "good"   ? "✅" :
+        analysis.score >= 6            ? "🟡" : "❌";
+      console.log(`    ${emoji} Score ${analysis.score}/10${analysis.urgentVendor ? " ⚡apurado" : ""} — ${enriched.title.slice(0, 60)}`);
       console.log(`       $${enriched.price.toLocaleString("es-AR")} ARS | ${enriched.permalink}`);
       if (enriched.description) {
         console.log(`       "${enriched.description.slice(0, 80)}..."`);
