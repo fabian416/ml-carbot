@@ -12,9 +12,9 @@ const CONFIG = {
   autos: {
     maxHoursOld: 6,
     priceMinARS: 3_000_000,
-    priceMaxARS: 20_000_000,
-    minScore: 7.5,             // subido de 6 → menos spam, más calidad
-    maxAlertsPerCycle: 3,      // máximo 3 alertas por ciclo
+    priceMaxARS: 15_000_000,   // bajado de 20M → sweet spot real
+    minScore: 7.5,
+    maxAlertsPerCycle: 3,
     queries: AUTO_QUERIES,
   },
   motos: {
@@ -94,14 +94,37 @@ function passesTitleFilter(title: string): boolean {
 
 function passesDealer(title: string, description: string): boolean {
   const text = (title + " " + description).toLowerCase();
-  const isDealer = DEALER_BLACKLIST.some((w) => text.includes(w));
-  return !isDealer;
+  return !DEALER_BLACKLIST.some((w) => text.includes(w));
 }
 
 function isRecent(dateStr: string | null, maxHoursOld: number): boolean {
-  if (!dateStr) return true; // sin fecha → FB ya ordena por recencia, lo dejamos pasar
+  if (!dateStr) return true;
   const cutoff = Date.now() - maxHoursOld * 60 * 60 * 1000;
   return new Date(dateStr).getTime() >= cutoff;
+}
+
+// Detecta urgencia del vendedor → prioriza en la cola
+const URGENCY_KEYWORDS = [
+  "urgente", "liquido", "viajo", "me voy", "necesito el dinero",
+  "acepto ofertas", "negociable", "escucho ofertas", "por viaje",
+  "vendo hoy", "primera oferta", "al exterior", "me mudo",
+];
+
+function getUrgencyScore(title: string, desc: string): number {
+  const text = (title + " " + desc).toLowerCase();
+  return URGENCY_KEYWORDS.filter((w) => text.includes(w)).length;
+}
+
+// Flags de problemas ocultos — penalización extra en pre-filtro
+const HIDDEN_PROBLEM_FLAGS = [
+  "tramitando papeles", "sin vtv", "motor rectificado", "caja reparada",
+  "golpe leve", "detalle minimo", "detalles minimos", "para entendidos",
+  "tren delantero", "anda en 3", "consume un poco",
+];
+
+function hasHiddenProblems(description: string): boolean {
+  const text = description.toLowerCase();
+  return HIDDEN_PROBLEM_FLAGS.some((w) => text.includes(w));
 }
 
 async function runCategory(
@@ -139,9 +162,14 @@ async function runCategory(
   // Marcar todos como vistos ANTES de procesar para evitar duplicados entre ciclos
   candidates.forEach((l) => seen.add(l.id));
 
+  // Ordenar por urgencia del vendedor (más urgentes primero)
+  const sorted = [...candidates].sort((a, b) =>
+    getUrgencyScore(b.title, b.description ?? "") - getUrgencyScore(a.title, a.description ?? "")
+  );
+
   const { cookieStr } = loadCookies();
 
-  for (const listing of candidates) {
+  for (const listing of sorted) {
     totalAnalyzed++;
 
     try {
@@ -153,9 +181,28 @@ async function runCategory(
         images: detail.images?.length ? detail.images : listing.images ?? [],
       };
 
-      // Paso 3.5: filtrar concesionarias/revendedores por descripción
+      // Paso 3.5a: filtrar dealers por descripción
       if (!passesDealer(enriched.title, enriched.description ?? "")) {
-        console.log(`    🏪 Dealer/concesionaria — ${enriched.title.slice(0, 50)}`);
+        console.log(`    🏪 Dealer — ${enriched.title.slice(0, 50)}`);
+        continue;
+      }
+
+      // Paso 3.5b: filtrar descripción muy corta (oculta información)
+      if ((enriched.description ?? "").length < 80) {
+        console.log(`    📝 Desc. muy corta — ${enriched.title.slice(0, 50)}`);
+        continue;
+      }
+
+      // Paso 3.5c: filtrar problemas ocultos en descripción
+      if (hasHiddenProblems(enriched.description ?? "")) {
+        console.log(`    ⚠️  Problema oculto — ${enriched.title.slice(0, 50)}`);
+        continue;
+      }
+
+      // Paso 3.5d: filtrar sin fotos suficientes
+      const imgCount = enriched.images?.length ?? 0;
+      if (imgCount < 3) {
+        console.log(`    📷 Sin fotos suficientes (${imgCount}) — ${enriched.title.slice(0, 50)}`);
         continue;
       }
 
@@ -167,8 +214,10 @@ async function runCategory(
         : "mediana FB: no disponible";
       console.log(`    📊 ${medianLog} | precio: $${enriched.price.toLocaleString("es-AR")}`);
 
-      // Paso 5: descartar si está caro (ahorra tokens de Claude)
-      if (medianPrice && enriched.price > medianPrice * 1.2) {
+      // Paso 5: descartar si está caro (threshold dinámico por urgencia)
+      const urgency = getUrgencyScore(enriched.title, enriched.description ?? "");
+      const medianThreshold = urgency >= 2 ? 1.05 : 1.2; // apurado → más estricto en precio
+      if (medianPrice && enriched.price > medianPrice * medianThreshold) {
         console.log(`    ⏭️  Caro vs mediana — ${enriched.title.slice(0, 50)}`);
         continue;
       }

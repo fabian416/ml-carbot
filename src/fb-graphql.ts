@@ -9,7 +9,9 @@ const BA_LNG = -58.3816;
 export const AUTO_QUERIES = [
   "Toyota", "Volkswagen", "Chevrolet", "Ford",
   "Renault", "Peugeot", "Fiat", "Honda",
-  "auto usado", "camioneta", "Nissan", "Citroën",
+  "auto usado", "Nissan", "Citroën",
+  // utilitarios — segmento de alta demanda ignorado hasta ahora
+  "Kangoo", "Partner furgon", "Fiorino", "utilitario furgon",
 ];
 
 export const MOTO_QUERIES = [
